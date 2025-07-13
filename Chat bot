@@ -1,1 +1,23 @@
+<script>
+  async function sendToGPT() {
+    const input = document.getElementById('userInput').value;
 
+    const responseBox = document.getElementById('response');
+    responseBox.innerText = "Thinking...";
+
+    const result = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "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" // 👈 YOUR API KEY GOES HERE
+      },
+      body: JSON.stringify({
+        model: "gpt-3.5-turbo",
+        messages: [{ role: "user", content: input }]
+      })
+    });
+
+    const data = await result.json();
+    responseBox.innerText = data.choices[0].message.content;
+  }
+</script>

@@ -1,0 +1,275 @@
+<!doctype html>
+
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Text → Cinema (Client-side)</title>
+  <style>
+    :root{--bg:#0b0f17;--card:#0f1724;--accent:#ff6b6b}
+    html,body{height:100%;margin:0;font-family:Inter,ui-sans-serif,system-ui,Segoe UI,Roboto,'Helvetica Neue',Arial}
+    body{background:linear-gradient(180deg,#05060a 0%, #0b1220 100%);color:#e6eef8;display:flex;gap:24px;align-items:flex-start;padding:32px}
+    .app{max-width:1100px;margin:0 auto;width:100%;display:grid;grid-template-columns:380px 1fr;gap:24px}
+    .panel{background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));padding:18px;border-radius:16px;box-shadow:0 8px 30px rgba(2,6,23,0.6)}
+    h1{margin:0 0 8px;font-size:18px}
+    label{display:block;font-size:13px;color:#9fb0d6;margin-top:12px}
+    textarea{width:100%;height:220px;padding:12px;border-radius:10px;border:0;background:rgba(255,255,255,0.02);color:inherit;resize:vertical}
+    select,input,button{width:100%;padding:10px;border-radius:10px;border:0;background:#071026;color:inherit;margin-top:8px}
+    .small{font-size:13px;color:#9fb0d6}
+    .canvas-wrap{display:flex;flex-direction:column;gap:12px}
+    canvas{width:100%;height:540px;background:linear-gradient(180deg,#000 0%, #0b1220 60%);border-radius:12px}
+    .controls{display:flex;gap:8px}
+    .controls button{flex:1}
+    footer{grid-column:1/-1;margin-top:8px;color:#8fa8d1;font-size:13px}
+    .row{display:flex;gap:8px}
+    .hint{font-size:12px;color:#7f9fcf;margin-top:8px}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="panel">
+      <h1>Text → Cinema</h1>
+      <div class="small">Write scenes (separate by blank line). This creates cinematic slides and lets you export a short WebM video.</div><label>Script</label>
+  <textarea id="script" placeholder="INT. HOUSE - DAY\nA child looks out the window...\n\nEXT. STREET - NIGHT\nRain falls as neon signs flicker..."></textarea>
+
+  <label>Animation Style</label>
+  <select id="style">
+    <option value="cinema">Cinematic pan & zoom</option>
+    <option value="typewriter">Typewriter text reveal</option>
+    <option value="fade">Cross-fade scenes</option>
+  </select>
+
+  <label>Scene Duration (seconds)</label>
+  <input id="duration" type="number" value="4" min="1" />
+
+  <label>Background Music (optional)</label>
+  <input id="music" type="file" accept="audio/*" />
+  <div class="hint">You can upload an mp3/m4a to include audio in the exported video.</div>
+
+  <label>Title (optional)</label>
+  <input id="title" placeholder="My Short — Text to Cinema" />
+
+  <div class="row" style="margin-top:12px">
+    <button id="preview">Preview</button>
+    <button id="record">Record & Export</button>
+  </div>
+
+  <div class="hint">Preview plays in-browser. Recording captures canvas + optional audio and offers a WebM download (supported in modern browsers).</div>
+</div>
+
+<div class="panel canvas-wrap">
+  <div style="display:flex;justify-content:space-between;align-items:center">
+    <h1 id="movieTitle">Preview</h1>
+    <div class="small">Resolution: 1280 × 720</div>
+  </div>
+  <canvas id="stage" width="1280" height="720"></canvas>
+  <div class="controls">
+    <button id="playPause">Play</button>
+    <button id="stop">Stop</button>
+    <button id="download" disabled>Download last export</button>
+  </div>
+  <div id="status" class="small" style="margin-top:6px">Idle</div>
+</div>
+
+<footer class="panel">How to publish:<br>1) Create a new GitHub repository, add this file as <code>index.html</code> in root. 2) In repo settings -> Pages -> choose branch main and root. 3) Your site will be at <code>https://&lt;username&gt;.github.io/&lt;repo&gt;/</code>.</footer>
+
+  </div>  <script>
+  // --- Utilities ---
+  const canvas = document.getElementById('stage');
+  const ctx = canvas.getContext('2d');
+  let animationRequest = null;
+  let playing = false;
+
+  function splitScenes(text){
+    return text.split(/\n\s*\n/).map(s=>s.trim()).filter(Boolean);
+  }
+
+  function fitTextToBox(ctx, text, maxWidth, startSize=64, minSize=18){
+    let size = startSize; ctx.font = `${size}px serif`;
+    while(size>minSize && ctx.measureText(text).width>maxWidth){ size-=2; ctx.font=`${size}px serif`; }
+    return size;
+  }
+
+  // Render a single frame with camera transform
+  function renderScene(sceneText, tProgress, style, title){
+    const W = canvas.width, H = canvas.height;
+    // background gradient
+    const g = ctx.createLinearGradient(0,0,0,H);
+    g.addColorStop(0,'#07101a'); g.addColorStop(1,'#05070a');
+    ctx.fillStyle = g; ctx.fillRect(0,0,W,H);
+
+    // subtle film grain
+    for(let i=0;i<100;i++){
+      ctx.fillStyle = `rgba(255,255,255,${Math.random()*0.02})`;
+      ctx.fillRect(Math.random()*W, Math.random()*H, 1,1);
+    }
+
+    // compute camera pan/zoom
+    let scale = 1 + 0.06 * Math.sin(tProgress*Math.PI);
+    let tx = (0.5 - tProgress*0.2)*W;
+    ctx.save();
+    ctx.translate(tx, 0);
+    ctx.scale(scale, scale);
+
+    // big scene title
+    ctx.fillStyle = 'rgba(255,255,255,0.06)';
+    ctx.font = '700 48px system-ui';
+    ctx.fillText((title||'').toUpperCase(), 40, 110);
+
+    // text block
+    ctx.fillStyle = '#e8f3ff';
+    // wrap text
+    const padding = 80; const maxW = W - padding*2;
+    const baseSize = fitTextToBox(ctx, sceneText.split('\n')[0]||sceneText, 900, 54, 20);
+    let lines = wrapText(sceneText, maxW, baseSize);
+
+    // style variations
+    if(style==='typewriter'){
+      // reveal characters according to progress
+      const full = lines.join('\n');
+      const chars = Math.floor(full.length * tProgress);
+      const shown = full.slice(0,chars);
+      lines = shown.split('\n');
+    }
+
+    // draw text block with shadow
+    ctx.font = `${baseSize}px serif`;
+    ctx.textBaseline = 'top';
+    const lineHeight = baseSize*1.3;
+    let y = 180;
+    for(let i=0;i<lines.length;i++){
+      ctx.fillStyle = 'rgba(0,0,0,0.45)'; ctx.fillText(lines[i], padding+2, y+2);
+      ctx.fillStyle = '#e6f0ff'; ctx.fillText(lines[i], padding, y);
+      y += lineHeight;
+      if(y>H-120) break;
+    }
+
+    ctx.restore();
+
+    // cinematic bars
+    ctx.fillStyle='rgba(3,6,12,0.95)';
+    ctx.fillRect(0,0,W,60); ctx.fillRect(0,H-60,W,60);
+  }
+
+  function wrapText(text, maxW, initialSize){
+    // simple wrap: split words and measure
+    const words = text.replace(/\n/g,' \n ').split(/\s+/);
+    let lines = [], cur=''; ctx.font=`${initialSize}px serif`;
+    words.forEach(w=>{
+      if(w==='\n'){ lines.push(cur.trim()); cur=''; return; }
+      const test = (cur?cur+' ':'')+w;
+      if(ctx.measureText(test).width>maxW){ lines.push(cur.trim()); cur=w; } else { cur=test; }
+    });
+    if(cur.trim()) lines.push(cur.trim());
+    return lines;
+  }
+
+  // Playback engine
+  let _scenes = [];
+  let _style = 'cinema';
+  let _duration = 4;
+  let _startTime = 0;
+  let _totalDuration = 0;
+
+  function startPreview(){
+    stopPreview();
+    const text = document.getElementById('script').value;
+    _scenes = splitScenes(text);
+    if(_scenes.length===0){ setStatus('Add some script first'); return; }
+    _style = document.getElementById('style').value;
+    _duration = Math.max(1, Number(document.getElementById('duration').value)||4);
+    _totalDuration = _scenes.length * _duration;
+    _startTime = performance.now();
+    playing = true; document.getElementById('playPause').textContent='Pause';
+    function loop(now){
+      const elapsed = (now - _startTime)/1000;
+      if(elapsed>=_totalDuration){ stopPreview(); return; }
+      const sceneIdx = Math.floor(elapsed/_duration);
+      const tInScene = (elapsed - sceneIdx*_duration) / _duration;
+      renderScene(_scenes[sceneIdx], tInScene, _style, document.getElementById('title').value);
+      animationRequest = requestAnimationFrame(loop);
+    }
+    animationRequest = requestAnimationFrame(loop);
+    setStatus('Playing preview');
+  }
+
+  function stopPreview(){
+    if(animationRequest) cancelAnimationFrame(animationRequest);
+    animationRequest = null; playing=false; document.getElementById('playPause').textContent='Play';
+    setStatus('Stopped');
+  }
+
+  document.getElementById('playPause').addEventListener('click', ()=>{
+    if(playing) stopPreview(); else startPreview();
+  });
+  document.getElementById('stop').addEventListener('click', ()=>{ stopPreview(); clearCanvas(); });
+  document.getElementById('preview').addEventListener('click', ()=>{ startPreview(); });
+
+  function clearCanvas(){ ctx.clearRect(0,0,canvas.width,canvas.height); ctx.fillStyle='#050710'; ctx.fillRect(0,0,canvas.width,canvas.height); }
+
+  function setStatus(t){ document.getElementById('status').textContent = t; }
+
+  // Recording (canvas + optional audio)
+  async function recordAndExport(){
+    const text = document.getElementById('script').value;
+    _scenes = splitScenes(text);
+    if(_scenes.length===0){ setStatus('Add script before exporting'); return; }
+    _style = document.getElementById('style').value;
+    _duration = Math.max(1, Number(document.getElementById('duration').value)||4);
+    _totalDuration = _scenes.length * _duration;
+
+    setStatus('Preparing recording...');
+    // prepare audio if any
+    const musicInput = document.getElementById('music');
+    let combinedStream = canvas.captureStream(30); // 30fps
+
+    if(musicInput.files.length>0){
+      const audioFile = musicInput.files[0];
+      const audioURL = URL.createObjectURL(audioFile);
+      const audio = new Audio(audioURL);
+      audio.loop = false; audio.crossOrigin='anonymous';
+      // connect audio to destination stream
+      const ctxAudio = new (window.AudioContext || window.webkitAudioContext)();
+      const src = ctxAudio.createMediaElementSource(audio);
+      const dest = ctxAudio.createMediaStreamDestination();
+      src.connect(ctxAudio.destination); // play to speakers
+      src.connect(dest); // capture to stream
+      // combine
+      combinedStream = new MediaStream([ ...combinedStream.getVideoTracks(), ...dest.stream.getAudioTracks() ]);
+      audio.play();
+    }
+
+    const recChunks = [];
+    const rec = new MediaRecorder(combinedStream, {mimeType:'video/webm;codecs=vp9'});
+    rec.ondataavailable = e => { if(e.data && e.data.size) recChunks.push(e.data); };
+    rec.start();
+    setStatus('Recording...');
+
+    // animate for duration
+    const start = performance.now();
+    function loop(now){
+      const elapsed = (now - start)/1000;
+      if(elapsed >= _totalDuration){ rec.stop(); setStatus('Finalizing export...'); return; }
+      const sceneIdx = Math.floor(elapsed/_duration);
+      const tInScene = (elapsed - sceneIdx*_duration) / _duration;
+      renderScene(_scenes[sceneIdx], tInScene, _style, document.getElementById('title').value);
+      requestAnimationFrame(loop);
+    }
+    requestAnimationFrame(loop);
+
+    rec.onstop = ()=>{
+      const blob = new Blob(recChunks, {type:'video/webm'});
+      const url = URL.createObjectURL(blob);
+      const dl = document.getElementById('download');
+      dl.href = url; dl.download = (document.getElementById('title').value || 'text-to-cinema') + '.webm'; dl.disabled = false;
+      setStatus('Export ready — click Download');
+    };
+  }
+
+  document.getElementById('record').addEventListener('click', ()=>{ recordAndExport(); });
+
+  // initial canvas
+  clearCanvas();
+  setStatus('Idle');
+  </script></body>
+</html>
